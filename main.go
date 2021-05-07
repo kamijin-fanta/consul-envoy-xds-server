@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/api/watch"
 	"github.com/hashicorp/go-hclog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -11,7 +10,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"net"
 	"net/http"
-	"sync"
 )
 
 var (
@@ -71,8 +69,6 @@ func start() {
 	serviceUpdate := make(chan []*Service)
 	stop := make(chan struct{})
 	go func() {
-		//startWatcher(serviceUpdate, logger.WithField("component", "consul-watcher"))
-
 		config := api.DefaultConfig()
 		client, err := api.NewClient(config)
 		if err != nil {
@@ -105,12 +101,6 @@ func start() {
 	<-stop
 }
 
-type ServiceWatcher struct {
-	*Service
-	Plan    *watch.Plan
-	mux     sync.Mutex
-	Entries []*api.ServiceEntry
-}
 type Service struct {
 	ServiceName string
 	Endpoints   []*ServiceEndpoint
