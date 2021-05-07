@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
 )
@@ -37,16 +38,6 @@ func TestE2E(t *testing.T) {
 		t.Fatal("server exits")
 	}()
 
-	//cmd := exec.Command("docker-compose", "--file=./test/docker-compose.yaml", "--project-name=consul-envoy-xds-server-test", "up")
-	//go func() {
-	//	err := cmd.Run()
-	//	require.Nil(err)
-	//}()
-	//defer func() {
-	//	if cmd.Process != nil {
-	//		cmd.Process.Kill()
-	//	}
-	//}()
 	cmd := exec.Command("docker-compose", "--file=./test/docker-compose.yaml", "--project-name=consul-envoy-xds-server-test", "up", "-d")
 	err := cmd.Run()
 	require.Nil(err)
@@ -57,15 +48,17 @@ func TestE2E(t *testing.T) {
 	}()
 
 	dummyOkListener, err := net.Listen("tcp", "127.0.0.1:0")
+	dummyOkServer := &dummyServer{status: 200}
 	require.Nil(err)
 	go func() {
-		err := startDummyHttpServer(dummyOkListener, 200)
+		err := dummyOkServer.StartDummyHttpServer(dummyOkListener)
 		require.Nil(err)
 	}()
 	dummyNgListener, err := net.Listen("tcp", "127.0.0.1:0")
+	dummyNgServer := &dummyServer{status: 400}
 	require.Nil(err)
 	go func() {
-		err := startDummyHttpServer(dummyNgListener, 400)
+		err := dummyNgServer.StartDummyHttpServer(dummyNgListener)
 		require.Nil(err)
 	}()
 	var (
@@ -95,7 +88,7 @@ func TestE2E(t *testing.T) {
 			Address: dummyOkTcpAddr.IP.String(),
 			Port:    dummyOkTcpAddr.Port,
 			Check: &api.AgentServiceCheck{
-				CheckID:  "check",
+				CheckID:  "success_service_check",
 				Name:     "check",
 				HTTP:     dummyOkAddr,
 				Interval: "3s",
@@ -112,7 +105,7 @@ func TestE2E(t *testing.T) {
 			Address: dummyNgTcpAddr.IP.String(),
 			Port:    dummyNgTcpAddr.Port,
 			Check: &api.AgentServiceCheck{
-				CheckID:  "check",
+				CheckID:  "fail_service_check",
 				Name:     "check",
 				HTTP:     dummyNgAddr,
 				Interval: "3s",
@@ -131,8 +124,13 @@ func TestE2E(t *testing.T) {
 	err = waitForUrl(envoyAddr+"/fail-service/", 503) // expect: 503 no healthy upstream
 	require.Nil(err)
 
-	//t.Logf("OK")
-	//time.Sleep(100 * time.Second)
+	dummyOkServer.SetStatusCode(400)
+	err = waitForUrl(envoyAddr+"/success-service/", 503) // expect: 503 no healthy upstream
+	require.Nil(err)
+
+	dummyOkServer.SetStatusCode(200)
+	err = waitForUrl(envoyAddr+"/success-service/", 200)
+	require.Nil(err)
 }
 
 func waitForUrl(url string, statusCode int) error {
@@ -150,10 +148,22 @@ func waitForUrl(url string, statusCode int) error {
 	}, backoff.NewExponentialBackOff())
 }
 
-func startDummyHttpServer(listener net.Listener, status int) error {
+type dummyServer struct {
+	sync.Mutex
+	status int
+}
+
+func (d *dummyServer) StartDummyHttpServer(listener net.Listener) error {
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.WriteHeader(status)
+		d.Lock()
+		defer d.Unlock()
+		writer.WriteHeader(d.status)
 		writer.Write([]byte("ok"))
 	})
 	return http.Serve(listener, handler)
+}
+func (d *dummyServer) SetStatusCode(status int) {
+	d.Lock()
+	defer d.Unlock()
+	d.status = status
 }

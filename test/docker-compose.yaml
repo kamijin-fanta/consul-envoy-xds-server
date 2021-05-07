@@ -2,26 +2,17 @@ version: "3.8"
 services: 
   envoy:
     image: "envoyproxy/envoy:v1.18.2"
-    # ports: 
-    #   - "16101:80"
-    #   - "16102:8080"
     volumes: 
       - "./envoy.yaml:/envoy.yaml"
     command: 
       - "--config-path"
       - "/envoy.yaml"
     network_mode: "host"
-    # extra_hosts:
-    #   - "host.docker.internal:host-gateway"
   consul:
     image: "consul:1.9.5"
-    # ports: 
-    #   - "16201:8500"
     command:
       - "agent"
       - "-dev"
       - "-client=0.0.0.0"
       - "-http-port=16201"
     network_mode: "host"
-    # extra_hosts:
-    #   - "host.docker.internal:host-gateway"
