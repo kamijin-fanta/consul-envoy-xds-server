@@ -4,9 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	"github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
-	"github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
+	"net"
+	"net/http"
+	"sort"
+	"sync"
+	"time"
+
+	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	envoy_config_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	envoy_service_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/server/v3"
@@ -18,11 +24,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
-	"net"
-	"net/http"
-	"sort"
-	"sync"
-	"time"
 )
 
 var (
@@ -45,17 +46,23 @@ var (
 	})
 )
 
+var (
+	listen     string
+	httpListen string
+	logLevel   string
+	logFormat  string
+)
+
 func main() {
-	var listen string
-	var httpListen string
-	var logLevel string
-	var logFormat string
 	flag.StringVar(&listen, "listen", "127.0.0.1:15000", "gRPC listen address")
 	flag.StringVar(&httpListen, "http-listen", "127.0.0.1:15001", "http metrics listen address")
 	flag.StringVar(&logLevel, "log-level", "info", "logging level. choose form panic,fatal,error,warn,info,debug,trace.")
 	flag.StringVar(&logFormat, "log-format", "text", "log format. choose from json,text.")
 	flag.Parse()
 
+	start()
+}
+func start() {
 	level, err := logrus.ParseLevel(logLevel)
 	if err != nil {
 		panic(err)
@@ -97,8 +104,9 @@ func main() {
 
 type ServiceWatcher struct {
 	*Service
-	Plan *watch.Plan
-	mux  sync.Mutex
+	Plan    *watch.Plan
+	mux     sync.Mutex
+	Entries []*api.ServiceEntry
 }
 type Service struct {
 	ServiceName string
@@ -157,39 +165,106 @@ func startWatcher(serviceUpdate chan []*Service, logger *logrus.Entry) {
 				},
 				Plan: plan,
 			}
-			plan.Handler = func(u uint64, i interface{}) {
+
+			emmitChange := func() {
 				serviceUpdateCounter.Inc()
 				watchServicesMux.Lock()
 				defer watchServicesMux.Unlock()
+
+				updateServices := make([]*Service, 0, len(watchServices))
+				for _, service := range watchServices {
+					endpoints := make([]*ServiceEndpoint, 0, len(service.Entries))
+					for _, se := range service.Entries {
+						switch se.Checks.AggregatedStatus() {
+						case api.HealthCritical, api.HealthMaint:
+							logger.
+								WithField("service", sn).
+								WithField("status", se.Checks.AggregatedStatus()).
+								WithField("addr", se.Node.Address).
+								Debug("skip entry")
+							continue
+						}
+
+						addr := se.Service.Address
+						if addr == "" {
+							addr = se.Node.Address
+						}
+
+						logger.
+							WithField("service", sn).
+							WithField("status", se.Checks.AggregatedStatus()).
+							WithField("node_addr", se.Node.Address).
+							WithField("service_addr", fmt.Sprintf("%s:%d", addr, se.Service.Port)).
+							Debug("refresh entry")
+
+						endpoints = append(endpoints, &ServiceEndpoint{
+							Host: addr,
+							Port: uint32(se.Service.Port),
+						})
+					}
+					service.Endpoints = endpoints
+					updateServices = append(updateServices, service.Service)
+				}
+				sort.Slice(updateServices, func(i, j int) bool {
+					return updateServices[i].ServiceName > updateServices[i].ServiceName
+				})
+				serviceUpdate <- updateServices
+			}
+
+			checkPlan, err := watch.Parse(map[string]interface{}{
+				"type":    "checks",
+				"service": serviceName,
+			})
+			if err != nil {
+				logger.WithError(err).Fatal("failed parse checks watch plan")
+			}
+
+			checkPlan.Handler = func(u uint64, i interface{}) {
 				service.mux.Lock()
 				defer service.mux.Unlock()
-				entries := i.([]*api.ServiceEntry)
-				endpoints := make([]*ServiceEndpoint, 0, len(entries))
-				for _, se := range entries {
-					addr := se.Service.Address
-					if addr == "" {
-						addr = se.Node.Address
+				receiveChecks := i.([]*api.HealthCheck)
+
+				for _, entry := range service.Entries {
+					for _, receiveCheck := range receiveChecks {
+						if entry.Service.ID != receiveCheck.ServiceID {
+							continue
+						}
+
+						for i, check := range entry.Checks {
+							if check.CheckID != receiveCheck.CheckID {
+								continue
+							}
+							entry.Checks[i] = receiveCheck
+							logger.WithField("check", receiveCheck).Info("check receive")
+						}
 					}
-					endpoints = append(endpoints, &ServiceEndpoint{
-						Host: addr,
-						Port: uint32(se.Service.Port),
-					})
 				}
-				service.Endpoints = endpoints
 
 				logger.
 					WithField("service", sn).
-					WithField("endpoints", len(endpoints)).
-					Debug("change service detail")
+					Debug("change service checks")
 
-				updateSerivces := make([]*Service, 0, len(watchServices))
-				for _, service := range watchServices {
-					updateSerivces = append(updateSerivces, service.Service)
+				emmitChange()
+			}
+
+			go func() {
+				if err := checkPlan.RunWithClientAndHclog(client, hcLogger); err != nil {
+					logger.WithField("service", sn).WithError(err).Fatal("failed running watch checks plan")
 				}
-				sort.Slice(updateSerivces, func(i, j int) bool {
-					return updateSerivces[i].ServiceName > updateSerivces[i].ServiceName
-				})
-				serviceUpdate <- updateSerivces
+			}()
+
+			time.Sleep(1 * time.Second) // start service watch after first checks fetch
+
+			plan.Handler = func(u uint64, i interface{}) {
+				service.mux.Lock()
+				defer service.mux.Unlock()
+				entries := i.([]*api.ServiceEntry)
+				service.Entries = entries
+
+				logger.
+					WithField("service", sn).
+					Debug("change service detail")
+				emmitChange()
 			}
 			watchServices[serviceName] = service
 			go func() {
@@ -197,6 +272,8 @@ func startWatcher(serviceUpdate chan []*Service, logger *logrus.Entry) {
 					logger.WithField("service", sn).WithError(err).Fatal("failed running watch watch service plan")
 				}
 			}()
+
+			// todo stop to plan
 		}
 
 		for serviceName, plan := range watchServices {
