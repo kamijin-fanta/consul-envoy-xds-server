@@ -1,0 +1,18 @@
+version: "3.8"
+services: 
+  envoy:
+    image: "envoyproxy/envoy:v1.18.2"
+    volumes: 
+      - "./envoy.yaml:/envoy.yaml"
+    command: 
+      - "--config-path"
+      - "/envoy.yaml"
+    network_mode: "host"
+  consul:
+    image: "consul:1.9.5"
+    command:
+      - "agent"
+      - "-dev"
+      - "-client=0.0.0.0"
+      - "-http-port=16201"
+    network_mode: "host"
