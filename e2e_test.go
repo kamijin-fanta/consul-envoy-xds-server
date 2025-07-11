@@ -38,11 +38,11 @@ func TestE2E(t *testing.T) {
 		t.Fatal("server exits")
 	}()
 
-	cmd := exec.Command("docker-compose", "--file=./test/docker-compose.yaml", "--project-name=consul-envoy-xds-server-test", "up", "-d")
+	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "--project-name=consul-envoy-xds-server-test", "up", "-d")
 	err := cmd.Run()
 	require.Nil(err)
 	defer func() {
-		cmd := exec.Command("docker-compose", "--file", "./test/docker-compose.yaml", "--project-name=consul-envoy-xds-server-test", "down")
+		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "--project-name=consul-envoy-xds-server-test", "down")
 		err := cmd.Run()
 		require.Nil(err)
 	}()
