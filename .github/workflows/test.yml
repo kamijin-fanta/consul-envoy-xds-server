@@ -5,15 +5,23 @@ on:
 jobs:
   builds:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # https://www.envoyproxy.io/docs/envoy/latest/version_history/version_history#stable-versions
+        envoy-version: ["1.34.2", "1.33.4", "1.32.7", "1.31.9"]
+    env:
+      ENVOY_VERSION: ${{ matrix.envoy-version }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
       - name: Setup Go
-        uses: actions/setup-go@v1
+        uses: actions/setup-go@v4
         with:
-          go-version: 1.16
+          go-version: "1.24"
       - name: test
         run: go test -count=1 -v .
+        env:
+          ENVOY_VERSION: ${{ matrix.envoy-version }}

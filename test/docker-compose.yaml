@@ -1,6 +1,6 @@
 services:
   envoy:
-    image: "envoyproxy/envoy:v1.34.2"
+    image: "envoyproxy/envoy:v${ENVOY_VERSION:-1.34.2}"
     volumes:
       - "./envoy.yaml:/envoy.yaml"
     command:
