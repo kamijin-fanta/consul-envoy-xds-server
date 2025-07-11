@@ -2,9 +2,6 @@ package main
 
 import (
 	"fmt"
-	"github.com/cenkalti/backoff/v4"
-	"github.com/hashicorp/consul/api"
-	"github.com/stretchr/testify/require"
 	"net"
 	"net/http"
 	"os"
@@ -12,6 +9,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/cenkalti/backoff/v4"
+	"github.com/hashicorp/consul/api"
+	"github.com/stretchr/testify/require"
 )
 
 func TestE2E(t *testing.T) {

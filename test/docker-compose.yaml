@@ -1,15 +1,14 @@
-version: "3.8"
-services: 
+services:
   envoy:
-    image: "envoyproxy/envoy:v1.18.2"
-    volumes: 
+    image: "envoyproxy/envoy:v1.34.2"
+    volumes:
       - "./envoy.yaml:/envoy.yaml"
-    command: 
+    command:
       - "--config-path"
       - "/envoy.yaml"
     network_mode: "host"
   consul:
-    image: "consul:1.9.5"
+    image: "hashicorp/consul:1.21.2"
     command:
       - "agent"
       - "-dev"
