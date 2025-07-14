@@ -55,6 +55,7 @@ func startXdsServer(listener net.Listener, serviceUpdate <-chan []*Service, logg
 	go func() {
 		for {
 			upstreams := <-serviceUpdate
+			serviceListUpdateCounter.Inc()
 			snapshot := generateSnapshot(upstreams)
 
 			snapshotMutex.Lock()

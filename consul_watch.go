@@ -151,6 +151,7 @@ func (w *WatchedService) Start(client *api.Client, hcLogger hclog.Logger) error 
 		entries := i.([]*api.ServiceEntry)
 		w.Entries = entries
 
+		serviceUpdateCounter.Inc()
 		w.handleChange()
 	}
 	runServicePlan := func() {
@@ -204,6 +205,7 @@ func (w *WatchedService) Start(client *api.Client, hcLogger hclog.Logger) error 
 			WithField("receiveChecks", len(receiveChecks)).
 			Debug("watch: change service checks")
 
+		serviceUpdateCounter.Inc()
 		w.handleChange()
 	}
 
