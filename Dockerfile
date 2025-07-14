@@ -1,4 +1,4 @@
-FROM golang:1.14 as builder
+FROM golang:1.24 as builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
@@ -8,7 +8,7 @@ COPY . ./
 RUN CGO_ENABLED=0 go build -o consul-envoy-xds-server .
 
 
-FROM alpine:3.11
+FROM alpine:3.22
 
 RUN apk add --no-cache ca-certificates && update-ca-certificates
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
