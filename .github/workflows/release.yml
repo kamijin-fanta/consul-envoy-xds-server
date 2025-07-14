@@ -23,6 +23,14 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release with Auto-Generated Notes
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --generate-notes \
+            --title "Release ${{ github.ref_name }}" \
+            --verify-tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   dockerpublish:
     runs-on: ubuntu-latest
     steps:
