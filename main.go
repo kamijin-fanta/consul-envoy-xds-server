@@ -96,7 +96,7 @@ func start() {
 	}()
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		http.HandleFunc("/debug", debugHandler)
+		http.HandleFunc("/", debugHandler)
 		http.HandleFunc("/debug/snapshot", snapshotHandler)
 		logger.WithField("addr", httpListen).Info("start metrics http server")
 		err := http.ListenAndServe(httpListen, nil)
