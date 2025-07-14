@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -11,12 +12,19 @@ import (
 	envoy_service_endpoint_v3 "github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
+	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/server/v3"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 )
 
 var _ cache.NodeHash = &StandardNodeHash{}
+
+var (
+	currentSnapshot cache.Snapshot
+	snapshotMutex   sync.RWMutex
+	snapshotReady   bool
+)
 
 type StandardNodeHash struct{}
 
@@ -34,7 +42,7 @@ func startXdsServer(listener net.Listener, serviceUpdate <-chan []*Service, logg
 			xdsStreamCurrentGauge.Inc()
 			return nil
 		},
-		StreamClosedFunc: func(i int64) {
+		StreamClosedFunc: func(i int64, node *envoy_config_core_v3.Node) {
 			xdsStreamCurrentGauge.Dec()
 		},
 		StreamRequestFunc:  nil,
@@ -47,7 +55,14 @@ func startXdsServer(listener net.Listener, serviceUpdate <-chan []*Service, logg
 	go func() {
 		for {
 			upstreams := <-serviceUpdate
-			err := snapshotCache.SetSnapshot("default", generateSnapshot(upstreams))
+			snapshot := generateSnapshot(upstreams)
+
+			snapshotMutex.Lock()
+			currentSnapshot = *snapshot
+			snapshotReady = true
+			snapshotMutex.Unlock()
+
+			err := snapshotCache.SetSnapshot(ctx, "default", snapshot)
 			if err != nil {
 				logger.WithError(err).Fatal("set snapshot error")
 			}
@@ -63,7 +78,7 @@ func startXdsServer(listener net.Listener, serviceUpdate <-chan []*Service, logg
 	}
 }
 
-func generateSnapshot(services []*Service) cache.Snapshot {
+func generateSnapshot(services []*Service) *cache.Snapshot {
 	var resources []types.Resource
 
 	for _, service := range services {
@@ -99,5 +114,60 @@ func generateSnapshot(services []*Service) cache.Snapshot {
 		}
 		resources = append(resources, assignment)
 	}
-	return cache.NewSnapshot(fmt.Sprintf("%d", time.Now().UnixNano()), resources, nil, nil, nil, nil, nil)
+	resourceMap := map[resource.Type][]types.Resource{
+		resource.EndpointType: resources,
+	}
+	snapshot, err := cache.NewSnapshot(fmt.Sprintf("%d", time.Now().UnixNano()), resourceMap)
+	if err != nil {
+		logrus.WithError(err).Fatal("failed to create snapshot")
+	}
+	return snapshot
+}
+
+func GetCurrentSnapshot() cache.Snapshot {
+	snapshotMutex.RLock()
+	defer snapshotMutex.RUnlock()
+	if !snapshotReady {
+		return cache.Snapshot{}
+	}
+	s := currentSnapshot
+	return s
+}
+
+func GetServicesFromSnapshot() []*Service {
+	snapshot := GetCurrentSnapshot()
+	if snapshot.GetVersion(resource.EndpointType) == "" {
+		return []*Service{}
+	}
+
+	resources := snapshot.GetResources(resource.EndpointType)
+	var services []*Service
+
+	for _, resource := range resources {
+		if cla, ok := resource.(*envoy_config_endpoint_v3.ClusterLoadAssignment); ok {
+			service := &Service{
+				ServiceName: cla.ClusterName,
+				Endpoints:   []*ServiceEndpoint{},
+			}
+
+			for _, locality := range cla.Endpoints {
+				for _, endpoint := range locality.LbEndpoints {
+					if ep := endpoint.GetEndpoint(); ep != nil {
+						if addr := ep.GetAddress(); addr != nil {
+							if sockAddr := addr.GetSocketAddress(); sockAddr != nil {
+								service.Endpoints = append(service.Endpoints, &ServiceEndpoint{
+									Host: sockAddr.Address,
+									Port: sockAddr.GetPortValue(),
+								})
+							}
+						}
+					}
+				}
+			}
+
+			services = append(services, service)
+		}
+	}
+
+	return services
 }

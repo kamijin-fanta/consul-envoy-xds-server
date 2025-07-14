@@ -1,0 +1,14 @@
+{
+  "Service": {
+    "ID": "test-service-1",
+    "Name": "test-service",
+    "Address": "127.0.0.1",
+    "Port": 8080,
+    "Check": {
+      "Name": "Test Service Health Check",
+      "HTTP": "http://127.0.0.1:8080/",
+      "Interval": "5s",
+      "Timeout": "3s"
+    }
+  }
+}

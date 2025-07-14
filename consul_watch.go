@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
+	"sort"
+	"sync"
+
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/api/watch"
 	"github.com/hashicorp/go-hclog"
 	"github.com/sirupsen/logrus"
-	"sort"
-	"sync"
 )
 
 type ServiceRegistry struct {
@@ -61,7 +62,7 @@ func (r *ServiceRegistry) Emit() {
 		}()
 	}
 	sort.Slice(updateServices, func(i, j int) bool {
-		return updateServices[i].ServiceName > updateServices[i].ServiceName
+		return updateServices[i].ServiceName < updateServices[j].ServiceName
 	})
 
 	r.serviceUpdate <- updateServices
