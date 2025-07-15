@@ -11,14 +11,29 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type ServiceRegistry struct {
+type ConsulServiceWatcher struct {
 	sync.Mutex
 	logger        *logrus.Entry
 	serviceUpdate chan []*Service
 	services      map[string]*WatchedService
+	client        *api.Client
+	hcLogger      hclog.Logger
+	stop          chan struct{}
+	servicesWatchPlan *watch.Plan
 }
 
-func (r *ServiceRegistry) Emit() {
+func NewConsulServiceWatcher(logger *logrus.Entry, client *api.Client, hcLogger hclog.Logger) *ConsulServiceWatcher {
+	return &ConsulServiceWatcher{
+		logger:        logger,
+		serviceUpdate: make(chan []*Service, 10),
+		services:      map[string]*WatchedService{},
+		client:        client,
+		hcLogger:      hcLogger,
+		stop:          make(chan struct{}),
+	}
+}
+
+func (r *ConsulServiceWatcher) Emit() {
 	r.Lock()
 	defer r.Unlock()
 
@@ -68,7 +83,7 @@ func (r *ServiceRegistry) Emit() {
 	r.serviceUpdate <- updateServices
 }
 
-func (r *ServiceRegistry) Start(client *api.Client, hcLogger hclog.Logger) error {
+func (r *ConsulServiceWatcher) Start() error {
 	servicesWatchPlan, err := watch.Parse(map[string]interface{}{
 		"type": "services",
 	})
@@ -76,6 +91,7 @@ func (r *ServiceRegistry) Start(client *api.Client, hcLogger hclog.Logger) error
 		r.logger.WithError(err).Fatal("failed parse services watch plan")
 		return err
 	}
+	r.servicesWatchPlan = servicesWatchPlan
 
 	servicesWatchPlan.Handler = func(u uint64, i interface{}) {
 		services := i.(map[string][]string)
@@ -100,7 +116,7 @@ func (r *ServiceRegistry) Start(client *api.Client, hcLogger hclog.Logger) error
 				},
 			}
 			r.services[serviceName] = watchedService
-			watchedService.Start(client, hcLogger)
+			watchedService.Start(r.client, r.hcLogger)
 		}
 
 		// stop watch
@@ -115,10 +131,37 @@ func (r *ServiceRegistry) Start(client *api.Client, hcLogger hclog.Logger) error
 		}
 	}
 
-	if err := servicesWatchPlan.RunWithClientAndHclog(client, hcLogger); err != nil {
-		r.logger.WithError(err).Fatal("failed running watch watch services plan")
+	go func() {
+		if err := servicesWatchPlan.RunWithClientAndHclog(r.client, r.hcLogger); err != nil {
+			r.logger.WithError(err).Error("failed running watch services plan")
+		}
+	}()
+	return nil
+}
+
+func (r *ConsulServiceWatcher) Stop() {
+	r.Lock()
+	defer r.Unlock()
+	
+	if r.servicesWatchPlan != nil {
+		r.servicesWatchPlan.Stop()
 	}
-	return err
+	
+	for _, service := range r.services {
+		if service.checksPlan != nil {
+			service.checksPlan.Stop()
+		}
+		if service.servicePlan != nil {
+			service.servicePlan.Stop()
+		}
+	}
+	
+	close(r.stop)
+	close(r.serviceUpdate)
+}
+
+func (r *ConsulServiceWatcher) ServiceUpdate() <-chan []*Service {
+	return r.serviceUpdate
 }
 
 type WatchedService struct {

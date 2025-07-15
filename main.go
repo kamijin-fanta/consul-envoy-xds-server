@@ -6,11 +6,13 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-hclog"
+	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -38,10 +40,14 @@ var (
 )
 
 var (
-	listen     string
-	httpListen string
-	logLevel   string
-	logFormat  string
+	listen         string
+	httpListen     string
+	logLevel       string
+	logFormat      string
+	enableConsul   bool
+	enableNomad    bool
+	consulAddr     string
+	nomadAddr      string
 )
 
 func main() {
@@ -49,6 +55,10 @@ func main() {
 	flag.StringVar(&httpListen, "http-listen", "127.0.0.1:15001", "http metrics listen address")
 	flag.StringVar(&logLevel, "log-level", "info", "logging level. choose form panic,fatal,error,warn,info,debug,trace.")
 	flag.StringVar(&logFormat, "log-format", "text", "log format. choose from json,text.")
+	flag.BoolVar(&enableConsul, "enable-consul", true, "enable Consul service discovery")
+	flag.BoolVar(&enableNomad, "enable-nomad", false, "enable Nomad service discovery")
+	flag.StringVar(&consulAddr, "consul-addr", "", "Consul address (uses CONSUL_HTTP_ADDR env var if not set)")
+	flag.StringVar(&nomadAddr, "nomad-addr", "", "Nomad address (uses NOMAD_ADDR env var if not set)")
 	flag.Parse()
 
 	start()
@@ -73,21 +83,63 @@ func start() {
 
 	serviceUpdate := make(chan []*Service)
 	stop := make(chan struct{})
-	go func() {
-		config := api.DefaultConfig()
-		client, err := api.NewClient(config)
+	
+	// Initialize service watcher manager
+	watcherManager := NewServiceWatcherManager(logger.WithField("component", "service-watcher"))
+	
+	// Add Consul watcher if enabled
+	if enableConsul {
+		consulConfig := api.DefaultConfig()
+		if consulAddr != "" {
+			consulConfig.Address = consulAddr
+		}
+		consulClient, err := api.NewClient(consulConfig)
 		if err != nil {
-			logger.WithError(err).Fatal("failed create new consul client")
+			logger.WithError(err).Fatal("failed to create Consul client")
 		}
 		hcLogger := hclog.New(&hclog.LoggerOptions{
-			Name: "watch",
+			Name: "consul-watch",
 		})
-		registry := &ServiceRegistry{
-			logger:        logger.WithField("component", "consul-watcher"),
-			serviceUpdate: serviceUpdate,
-			services:      map[string]*WatchedService{},
+		
+		consulWatcher := NewConsulServiceWatcher(
+			logger.WithField("component", "consul-watcher"),
+			consulClient,
+			hcLogger,
+		)
+		watcherManager.AddWatcher("consul", consulWatcher)
+		logger.Info("Consul service discovery enabled")
+	}
+	
+	// Add Nomad watcher if enabled
+	if enableNomad {
+		nomadConfig := nomadapi.DefaultConfig()
+		if nomadAddr != "" {
+			nomadConfig.Address = nomadAddr
+		} else if addr := os.Getenv("NOMAD_ADDR"); addr != "" {
+			nomadConfig.Address = addr
 		}
-		registry.Start(client, hcLogger)
+		nomadClient, err := nomadapi.NewClient(nomadConfig)
+		if err != nil {
+			logger.WithError(err).Fatal("failed to create Nomad client")
+		}
+		
+		nomadWatcher := NewNomadServiceWatcher(
+			logger.WithField("component", "nomad-watcher"),
+			nomadClient,
+		)
+		watcherManager.AddWatcher("nomad", nomadWatcher)
+		logger.Info("Nomad service discovery enabled")
+	}
+	
+	// Start all watchers
+	go func() {
+		if err := watcherManager.Start(); err != nil {
+			logger.WithError(err).Fatal("failed to start service watchers")
+		}
+		// Forward updates from manager to the service update channel
+		for services := range watcherManager.ServiceUpdate() {
+			serviceUpdate <- services
+		}
 		stop <- struct{}{}
 	}()
 	go func() {
