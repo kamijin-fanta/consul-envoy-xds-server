@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,7 +17,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var e2eTestMutex sync.Mutex
+
 func TestE2E(t *testing.T) {
+	e2eTestMutex.Lock()
+	defer e2eTestMutex.Unlock()
+
 	//assert := assert.New(t)
 	require := require.New(t)
 
@@ -39,9 +45,11 @@ func TestE2E(t *testing.T) {
 	)
 	require.Nil(os.Setenv("CONSUL_HTTP_ADDR", consulApi))
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go func() {
-		start()
-		t.Fatal("server exits")
+		start(ctx)
 	}()
 
 	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
@@ -49,7 +57,7 @@ func TestE2E(t *testing.T) {
 	require.Nil(err)
 	defer func() {
 		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
-		err := cmd.Run()
+		err = cmd.Run()
 		require.Nil(err)
 	}()
 
@@ -140,6 +148,9 @@ func TestE2E(t *testing.T) {
 }
 
 func TestE2ENomad(t *testing.T) {
+	e2eTestMutex.Lock()
+	defer e2eTestMutex.Unlock()
+
 	require := require.New(t)
 
 	{
@@ -159,9 +170,11 @@ func TestE2ENomad(t *testing.T) {
 	)
 	require.Nil(os.Setenv("NOMAD_ADDR", nomadApi))
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go func() {
-		start()
-		t.Fatal("server exits")
+		start(ctx)
 	}()
 
 	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
@@ -169,7 +182,7 @@ func TestE2ENomad(t *testing.T) {
 	require.Nil(err)
 	defer func() {
 		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
-		err := cmd.Run()
+		err = cmd.Run()
 		require.Nil(err)
 	}()
 
@@ -309,6 +322,9 @@ job "fail-service-test" {
 }
 
 func TestE2EBoth(t *testing.T) {
+	e2eTestMutex.Lock()
+	defer e2eTestMutex.Unlock()
+
 	require := require.New(t)
 
 	{
@@ -331,9 +347,11 @@ func TestE2EBoth(t *testing.T) {
 	require.Nil(os.Setenv("CONSUL_HTTP_ADDR", consulApi))
 	require.Nil(os.Setenv("NOMAD_ADDR", nomadApi))
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go func() {
-		start()
-		t.Fatal("server exits")
+		start(ctx)
 	}()
 
 	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
@@ -341,7 +359,7 @@ func TestE2EBoth(t *testing.T) {
 	require.Nil(err)
 	defer func() {
 		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
-		err := cmd.Run()
+		err = cmd.Run()
 		require.Nil(err)
 	}()
 
@@ -441,6 +459,7 @@ job "merged-service-test" {
         name = "merged-service"
         address = "%s"
         port = "http"
+				provider = "nomad"
       }
     }
   }
@@ -463,6 +482,9 @@ job "merged-service-test" {
 }
 
 func waitForUrl(url string, statusCode int) error {
+	b := backoff.NewExponentialBackOff()
+	b.MaxInterval = 3 * time.Second
+	b.MaxElapsedTime = 120 * time.Second
 	return backoff.Retry(func() error {
 		res, err := http.Get(url)
 		if err != nil {
@@ -474,7 +496,7 @@ func waitForUrl(url string, statusCode int) error {
 			return fmt.Errorf("invalid status code want:%d response:%d url:%s", statusCode, res.StatusCode, url)
 		}
 		return nil
-	}, backoff.NewExponentialBackOff())
+	}, b)
 }
 
 type dummyServer struct {

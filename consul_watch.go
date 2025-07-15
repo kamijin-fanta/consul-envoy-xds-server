@@ -13,12 +13,12 @@ import (
 
 type ConsulServiceWatcher struct {
 	sync.Mutex
-	logger        *logrus.Entry
-	serviceUpdate chan []*Service
-	services      map[string]*WatchedService
-	client        *api.Client
-	hcLogger      hclog.Logger
-	stop          chan struct{}
+	logger            *logrus.Entry
+	serviceUpdate     chan []*Service
+	services          map[string]*WatchedService
+	client            *api.Client
+	hcLogger          hclog.Logger
+	stop              chan struct{}
 	servicesWatchPlan *watch.Plan
 }
 
@@ -98,8 +98,6 @@ func (r *ConsulServiceWatcher) Start() error {
 		r.Lock()
 		defer r.Unlock()
 
-		r.logger.Debug("watch: refresh service lists")
-
 		// start watch
 		for serviceName := range services {
 			if _, found := r.services[serviceName]; found {
@@ -142,11 +140,11 @@ func (r *ConsulServiceWatcher) Start() error {
 func (r *ConsulServiceWatcher) Stop() {
 	r.Lock()
 	defer r.Unlock()
-	
+
 	if r.servicesWatchPlan != nil {
 		r.servicesWatchPlan.Stop()
 	}
-	
+
 	for _, service := range r.services {
 		if service.checksPlan != nil {
 			service.checksPlan.Stop()
@@ -155,7 +153,7 @@ func (r *ConsulServiceWatcher) Stop() {
 			service.servicePlan.Stop()
 		}
 	}
-	
+
 	close(r.stop)
 	close(r.serviceUpdate)
 }

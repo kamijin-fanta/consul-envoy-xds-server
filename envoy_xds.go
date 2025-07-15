@@ -32,9 +32,7 @@ func (s *StandardNodeHash) ID(node *envoy_config_core_v3.Node) string {
 	return "default"
 }
 
-func startXdsServer(listener net.Listener, serviceUpdate <-chan []*Service, logger *logrus.Entry) {
-	ctx := context.Background()
-
+func startXdsServer(ctx context.Context, listener net.Listener, serviceUpdate <-chan []*Service, logger *logrus.Entry) {
 	snapshotCache := cache.NewSnapshotCache(false, &StandardNodeHash{}, nil)
 	callbacks := server.CallbackFuncs{
 		StreamOpenFunc: func(ctx context.Context, i int64, s string) error {
@@ -54,18 +52,23 @@ func startXdsServer(listener net.Listener, serviceUpdate <-chan []*Service, logg
 
 	go func() {
 		for {
-			upstreams := <-serviceUpdate
-			serviceListUpdateCounter.Inc()
-			snapshot := generateSnapshot(upstreams)
+			select {
+			case <-ctx.Done():
+				return
+			case upstreams := <-serviceUpdate:
+				serviceListUpdateCounter.Inc()
+				snapshot := generateSnapshot(upstreams)
 
-			snapshotMutex.Lock()
-			currentSnapshot = *snapshot
-			snapshotReady = true
-			snapshotMutex.Unlock()
+				snapshotMutex.Lock()
+				currentSnapshot = *snapshot
+				snapshotReady = true
+				snapshotMutex.Unlock()
 
-			err := snapshotCache.SetSnapshot(ctx, "default", snapshot)
-			if err != nil {
-				logger.WithError(err).Fatal("set snapshot error")
+				err := snapshotCache.SetSnapshot(ctx, "default", snapshot)
+				if err != nil {
+					logger.WithError(err).Error("set snapshot error")
+					return
+				}
 			}
 		}
 	}()
@@ -73,10 +76,17 @@ func startXdsServer(listener net.Listener, serviceUpdate <-chan []*Service, logg
 	grpcServer := grpc.NewServer()
 	envoy_service_endpoint_v3.RegisterEndpointDiscoveryServiceServer(grpcServer, srv)
 
-	err := grpcServer.Serve(listener)
-	if err != nil {
-		logger.WithError(err).Fatal("error on start grpc server")
-	}
+	// Start server in a goroutine
+	go func() {
+		err := grpcServer.Serve(listener)
+		if err != nil {
+			logger.WithError(err).Error("error on start grpc server")
+		}
+	}()
+
+	// Wait for context cancellation
+	<-ctx.Done()
+	grpcServer.GracefulStop()
 }
 
 func generateSnapshot(services []*Service) *cache.Snapshot {
