@@ -13,6 +13,8 @@ jobs:
       ENVOY_VERSION: ${{ matrix.envoy-version }}
 
     steps:
+      - name: which
+        run: which sleep
       - name: Checkout
         uses: actions/checkout@v4
         with:

@@ -48,14 +48,27 @@ func TestE2E(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		start(ctx)
 	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
 
-	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
+	cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "up", "-d")
 	err := cmd.Run()
 	require.Nil(err)
 	defer func() {
+		// show logs
+		cmdLogs := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "logs")
+		out, err := cmdLogs.CombinedOutput()
+		require.Nil(err, "docker compose logs failed")
+		t.Logf("docker compose logs:\n%s", out)
+
+		// down
 		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
 		err = cmd.Run()
 		require.Nil(err)
@@ -173,14 +186,27 @@ func TestE2ENomad(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		start(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-done
 	}()
 
 	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
 	err := cmd.Run()
 	require.Nil(err)
 	defer func() {
+		// show logs
+		cmdLogs := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "logs")
+		out, err := cmdLogs.CombinedOutput()
+		require.Nil(err, "docker compose logs failed")
+		t.Logf("docker compose logs:\n%s", out)
+
+		// down
 		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
 		err = cmd.Run()
 		require.Nil(err)
@@ -231,7 +257,7 @@ job "success-service-test" {
       driver = "raw_exec"
 
       config {
-        command = "/bin/sleep"
+        command = "sleep"
         args = ["3600"]
       }
 
@@ -268,7 +294,7 @@ job "fail-service-test" {
       driver = "raw_exec"
 
       config {
-        command = "/bin/sleep"
+        command = "sleep"
         args = ["3600"]
       }
 
@@ -350,14 +376,27 @@ func TestE2EBoth(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		start(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-done
 	}()
 
 	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
 	err := cmd.Run()
 	require.Nil(err)
 	defer func() {
+		// show logs
+		cmdLogs := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "logs")
+		out, err := cmdLogs.CombinedOutput()
+		require.Nil(err, "docker compose logs failed")
+		t.Logf("docker compose logs:\n%s", out)
+
+		// down
 		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
 		err = cmd.Run()
 		require.Nil(err)
@@ -446,7 +485,7 @@ job "merged-service-test" {
       driver = "raw_exec"
 
       config {
-        command = "/bin/sleep"
+        command = "sleep"
         args = ["3600"]
       }
 
@@ -484,7 +523,7 @@ job "merged-service-test" {
 func waitForUrl(url string, statusCode int) error {
 	b := backoff.NewExponentialBackOff()
 	b.MaxInterval = 3 * time.Second
-	b.MaxElapsedTime = 120 * time.Second
+	b.MaxElapsedTime = 30 * time.Second
 	return backoff.Retry(func() error {
 		res, err := http.Get(url)
 		if err != nil {
