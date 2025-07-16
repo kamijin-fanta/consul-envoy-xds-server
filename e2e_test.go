@@ -19,7 +19,7 @@ import (
 
 var e2eTestMutex sync.Mutex
 
-func TestE2E(t *testing.T) {
+func TestE2EConsul(t *testing.T) {
 	e2eTestMutex.Lock()
 	defer e2eTestMutex.Unlock()
 
@@ -196,10 +196,29 @@ func TestE2ENomad(t *testing.T) {
 		<-done
 	}()
 
+	// Create Nomad client for job management
+	nomadConf := nomadapi.DefaultConfig()
+	nomadConf.Address = nomadApi
+	nomadClient, err := nomadapi.NewClient(nomadConf)
+	require.Nil(err)
+
 	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
-	err := cmd.Run()
+	err = cmd.Run()
 	require.Nil(err)
 	defer func() {
+		// Stop Nomad jobs before shutdown
+		_, _, err := nomadClient.Jobs().Deregister("success-service-test", true, nil)
+		if err != nil {
+			t.Logf("Failed to stop success-service-test job: %v", err)
+		}
+		_, _, err = nomadClient.Jobs().Deregister("fail-service-test", true, nil)
+		if err != nil {
+			t.Logf("Failed to stop fail-service-test job: %v", err)
+		}
+
+		// Wait for jobs to be stopped
+		time.Sleep(2 * time.Second)
+
 		// show logs
 		cmdLogs := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "logs")
 		out, err := cmdLogs.CombinedOutput()
@@ -254,16 +273,12 @@ job "success-service-test" {
     }
 
     task "dummy" {
-      driver = "raw_exec"
+			driver = "docker"
 
       config {
+        image   = "alpine:latest"
         command = "sleep"
-        args = ["3600"]
-      }
-
-      resources {
-        cpu    = 100
-        memory = 128
+        args    = ["600"]
       }
 
       service {
@@ -291,16 +306,12 @@ job "fail-service-test" {
     }
 
     task "dummy" {
-      driver = "raw_exec"
+			driver = "docker"
 
       config {
+        image   = "alpine:latest"
         command = "sleep"
-        args = ["3600"]
-      }
-
-      resources {
-        cpu    = 100
-        memory = 128
+        args    = ["600"]
       }
 
       service {
@@ -312,11 +323,6 @@ job "fail-service-test" {
     }
   }
 }`, dummyNgTcpAddr.Port, dummyNgTcpAddr.IP.String())
-
-	nomadConf := nomadapi.DefaultConfig()
-	nomadConf.Address = nomadApi
-	nomadClient, err := nomadapi.NewClient(nomadConf)
-	require.Nil(err)
 
 	// Submit jobs to Nomad
 	successJob, err := nomadClient.Jobs().ParseHCL(successJobHCL, true)
@@ -386,10 +392,32 @@ func TestE2EBoth(t *testing.T) {
 		<-done
 	}()
 
+	// Create clients for service discovery backends early for cleanup
+	consulConf := api.DefaultConfig()
+	consulConf.Address = consulApiAddr
+	consulClient, err := api.NewClient(consulConf)
+	require.Nil(err)
+
+	nomadConf := nomadapi.DefaultConfig()
+	nomadConf.Address = nomadApi
+	nomadClient, err := nomadapi.NewClient(nomadConf)
+	require.Nil(err)
+
 	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
-	err := cmd.Run()
+	err = cmd.Run()
 	require.Nil(err)
 	defer func() {
+		// Stop Nomad jobs before shutdown
+		if nomadClient != nil {
+			_, _, err := nomadClient.Jobs().Deregister("merged-service-test", true, nil)
+			if err != nil {
+				t.Logf("Failed to stop merged-service-test job: %v", err)
+			}
+
+			// Wait for jobs to be stopped
+			time.Sleep(2 * time.Second)
+		}
+
 		// show logs
 		cmdLogs := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "logs")
 		out, err := cmdLogs.CombinedOutput()
@@ -437,16 +465,6 @@ func TestE2EBoth(t *testing.T) {
 	require.Nil(err)
 	t.Logf("test service is healthy")
 
-	consulConf := api.DefaultConfig()
-	consulConf.Address = consulApiAddr
-	consulClient, err := api.NewClient(consulConf)
-	require.Nil(err)
-
-	nomadConf := nomadapi.DefaultConfig()
-	nomadConf.Address = nomadApi
-	nomadClient, err := nomadapi.NewClient(nomadConf)
-	require.Nil(err)
-
 	// Register the same service in both Consul and Nomad to test merging
 	{
 		// Register in Consul with health check
@@ -482,16 +500,12 @@ job "merged-service-test" {
     }
 
     task "dummy" {
-      driver = "raw_exec"
+			driver = "docker"
 
       config {
+        image   = "alpine:latest"
         command = "sleep"
-        args = ["3600"]
-      }
-
-      resources {
-        cpu    = 100
-        memory = 128
+        args    = ["600"]
       }
 
       service {
