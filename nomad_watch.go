@@ -19,6 +19,7 @@ type NomadServiceWatcher struct {
 	stop          chan struct{}
 	ctx           context.Context
 	cancel        context.CancelFunc
+	serviceContexts map[string]context.CancelFunc
 }
 
 func NewNomadServiceWatcher(logger *logrus.Entry, client *nomadapi.Client) *NomadServiceWatcher {
@@ -31,6 +32,7 @@ func NewNomadServiceWatcher(logger *logrus.Entry, client *nomadapi.Client) *Noma
 		stop:          make(chan struct{}),
 		ctx:           ctx,
 		cancel:        cancel,
+		serviceContexts: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -40,6 +42,13 @@ func (n *NomadServiceWatcher) Start() error {
 }
 
 func (n *NomadServiceWatcher) Stop() {
+	n.Lock()
+	for _, cancelFunc := range n.serviceContexts {
+		cancelFunc()
+	}
+	n.serviceContexts = make(map[string]context.CancelFunc)
+	n.Unlock()
+	
 	n.cancel()
 	close(n.stop)
 	close(n.serviceUpdate)
@@ -91,7 +100,9 @@ func (n *NomadServiceWatcher) processServiceList(serviceStubs []*nomadapi.Servic
 					ServiceName: serviceStub.ServiceName,
 					Endpoints:   []*ServiceEndpoint{},
 				}
-				go n.watchServiceDetail(serviceStub.ServiceName)
+				serviceCtx, serviceCancel := context.WithCancel(n.ctx)
+				n.serviceContexts[serviceStub.ServiceName] = serviceCancel
+				go n.watchServiceDetail(serviceStub.ServiceName, serviceCtx)
 			}
 		}
 	}
@@ -99,6 +110,11 @@ func (n *NomadServiceWatcher) processServiceList(serviceStubs []*nomadapi.Servic
 	// Remove services that no longer exist
 	for serviceName := range n.services {
 		if !currentServices[serviceName] {
+			if cancelFunc, exists := n.serviceContexts[serviceName]; exists {
+				n.logger.WithField("service", serviceName).Debug("stopping service watch")
+				cancelFunc()
+				delete(n.serviceContexts, serviceName)
+			}
 			delete(n.services, serviceName)
 		}
 	}
@@ -106,12 +122,12 @@ func (n *NomadServiceWatcher) processServiceList(serviceStubs []*nomadapi.Servic
 	n.emitServices()
 }
 
-func (n *NomadServiceWatcher) watchServiceDetail(serviceName string) {
+func (n *NomadServiceWatcher) watchServiceDetail(serviceName string, ctx context.Context) {
 	var lastIndex uint64 = 0
 	
 	for {
 		select {
-		case <-n.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 			services, meta, err := n.client.Services().Get(serviceName, &nomadapi.QueryOptions{
