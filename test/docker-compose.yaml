@@ -1,3 +1,5 @@
+name: consul-envoy-xds-server-test
+
 services:
   envoy:
     image: "envoyproxy/envoy:v${ENVOY_VERSION:-1.34.2}"
@@ -15,3 +17,19 @@ services:
       - "-client=0.0.0.0"
       - "-http-port=16201"
     network_mode: "host"
+  nomad:
+    image: "hashicorp/nomad:1.10.3"
+    volumes:
+      - "./nomad.hcl:/nomad.hcl"
+      - "/sys/fs/cgroup:/sys/fs/cgroup:rw"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "/usr/bin/docker:/usr/bin/docker:ro"
+    command:
+      - "agent"
+      - "-config=/nomad.hcl"
+    ports:
+      - "16301:4646"
+    privileged: true
+    environment:
+      - NOMAD_SKIP_DOCKER_IMAGE_WARN=1
+      - DOCKER_HOST=unix:///var/run/docker.sock

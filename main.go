@@ -1,16 +1,22 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"html/template"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/go-hclog"
+	nomadapi "github.com/hashicorp/nomad/api"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -38,10 +44,14 @@ var (
 )
 
 var (
-	listen     string
-	httpListen string
-	logLevel   string
-	logFormat  string
+	listen         string
+	httpListen     string
+	logLevel       string
+	logFormat      string
+	enableConsul   bool
+	enableNomad    bool
+	consulAddr     string
+	nomadAddr      string
 )
 
 func main() {
@@ -49,11 +59,26 @@ func main() {
 	flag.StringVar(&httpListen, "http-listen", "127.0.0.1:15001", "http metrics listen address")
 	flag.StringVar(&logLevel, "log-level", "info", "logging level. choose form panic,fatal,error,warn,info,debug,trace.")
 	flag.StringVar(&logFormat, "log-format", "text", "log format. choose from json,text.")
+	flag.BoolVar(&enableConsul, "enable-consul", true, "enable Consul service discovery")
+	flag.BoolVar(&enableNomad, "enable-nomad", false, "enable Nomad service discovery")
+	flag.StringVar(&consulAddr, "consul-addr", "", "Consul address (uses CONSUL_HTTP_ADDR env var if not set)")
+	flag.StringVar(&nomadAddr, "nomad-addr", "", "Nomad address (uses NOMAD_ADDR env var if not set)")
 	flag.Parse()
 
-	start()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle shutdown signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	start(ctx)
 }
-func start() {
+func start(ctx context.Context) {
 	level, err := logrus.ParseLevel(logLevel)
 	if err != nil {
 		panic(err)
@@ -72,40 +97,134 @@ func start() {
 	}
 
 	serviceUpdate := make(chan []*Service)
-	stop := make(chan struct{})
-	go func() {
-		config := api.DefaultConfig()
-		client, err := api.NewClient(config)
+	
+	// Initialize service watcher manager
+	watcherManager := NewServiceWatcherManager(logger.WithField("component", "service-watcher"))
+	
+	// Add Consul watcher if enabled
+	if enableConsul {
+		consulConfig := api.DefaultConfig()
+		if consulAddr != "" {
+			consulConfig.Address = consulAddr
+		}
+		consulClient, err := api.NewClient(consulConfig)
 		if err != nil {
-			logger.WithError(err).Fatal("failed create new consul client")
+			logger.WithError(err).Fatal("failed to create Consul client")
 		}
 		hcLogger := hclog.New(&hclog.LoggerOptions{
-			Name: "watch",
+			Name: "consul-watch",
 		})
-		registry := &ServiceRegistry{
-			logger:        logger.WithField("component", "consul-watcher"),
-			serviceUpdate: serviceUpdate,
-			services:      map[string]*WatchedService{},
+		
+		consulWatcher := NewConsulServiceWatcher(
+			logger.WithField("component", "consul-watcher"),
+			consulClient,
+			hcLogger,
+		)
+		watcherManager.AddWatcher("consul", consulWatcher)
+		logger.Info("Consul service discovery enabled")
+	}
+	
+	// Add Nomad watcher if enabled
+	if enableNomad {
+		nomadConfig := nomadapi.DefaultConfig()
+		if nomadAddr != "" {
+			nomadConfig.Address = nomadAddr
+		} else if addr := os.Getenv("NOMAD_ADDR"); addr != "" {
+			nomadConfig.Address = addr
 		}
-		registry.Start(client, hcLogger)
-		stop <- struct{}{}
-	}()
-	go func() {
-		startXdsServer(lis, serviceUpdate, logger.WithField("component", "xds-server"))
-		stop <- struct{}{}
-	}()
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		http.HandleFunc("/", debugHandler)
-		http.HandleFunc("/debug/snapshot", snapshotHandler)
-		logger.WithField("addr", httpListen).Info("start metrics http server")
-		err := http.ListenAndServe(httpListen, nil)
+		nomadClient, err := nomadapi.NewClient(nomadConfig)
 		if err != nil {
+			logger.WithError(err).Fatal("failed to create Nomad client")
+		}
+		
+		nomadWatcher := NewNomadServiceWatcher(
+			logger.WithField("component", "nomad-watcher"),
+			nomadClient,
+		)
+		watcherManager.AddWatcher("nomad", nomadWatcher)
+		logger.Info("Nomad service discovery enabled")
+	}
+	
+	// Create HTTP server
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/", debugHandler)
+	mux.HandleFunc("/debug/snapshot", snapshotHandler)
+	httpServer := &http.Server{
+		Addr:    httpListen,
+		Handler: mux,
+	}
+	
+	var wg sync.WaitGroup
+	
+	// Start service watcher
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := watcherManager.Start(); err != nil {
+			logger.WithError(err).Fatal("failed to start service watchers")
+		}
+		// Forward updates from manager to the service update channel
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case services := <-watcherManager.ServiceUpdate():
+				select {
+				case <-ctx.Done():
+					return
+				case serviceUpdate <- services:
+				}
+			}
+		}
+	}()
+	
+	// Start XDS server
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startXdsServer(ctx, lis, serviceUpdate, logger.WithField("component", "xds-server"))
+	}()
+	
+	// Start HTTP server
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		logger.WithField("addr", httpListen).Info("start metrics http server")
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.WithError(err).Fatal("failed start metrics http server")
 		}
-		stop <- struct{}{}
 	}()
-	<-stop
+	
+	// Wait for context cancellation
+	<-ctx.Done()
+	logger.Info("Shutting down server...")
+	
+	// Shutdown HTTP server
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.WithError(err).Error("HTTP server shutdown error")
+	}
+	
+	// Close listener
+	if err := lis.Close(); err != nil {
+		logger.WithError(err).Error("Listener close error")
+	}
+	
+	// Wait for all goroutines to finish
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	
+	select {
+	case <-done:
+		logger.Info("All services stopped gracefully")
+	case <-time.After(10 * time.Second):
+		logger.Warn("Timeout waiting for services to stop")
+	}
 }
 
 type Service struct {
