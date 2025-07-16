@@ -17,11 +17,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var e2eTestMutex sync.Mutex
+func TestMain(m *testing.M) {
+	// Start docker-compose
+	dockerComposeCmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "up", "-d")
+	err := dockerComposeCmd.Run()
+	if err != nil {
+		fmt.Printf("Failed to start docker-compose: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Wait for services to be ready
+	time.Sleep(5 * time.Second)
+
+	// Run tests
+	code := m.Run()
+
+	// Cleanup
+	cleanupCmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
+	cleanupCmd.Run()
+
+	os.Exit(code)
+}
 
 func TestE2EConsul(t *testing.T) {
-	e2eTestMutex.Lock()
-	defer e2eTestMutex.Unlock()
 
 	//assert := assert.New(t)
 	require := require.New(t)
@@ -56,22 +74,6 @@ func TestE2EConsul(t *testing.T) {
 	defer func() {
 		cancel()
 		<-done
-	}()
-
-	cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "up", "-d")
-	err := cmd.Run()
-	require.Nil(err)
-	defer func() {
-		// show logs
-		cmdLogs := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "logs")
-		out, err := cmdLogs.CombinedOutput()
-		require.Nil(err, "docker compose logs failed")
-		t.Logf("docker compose logs:\n%s", out)
-
-		// down
-		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
-		err = cmd.Run()
-		require.Nil(err)
 	}()
 
 	dummyOkListener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -115,7 +117,7 @@ func TestE2EConsul(t *testing.T) {
 			Address: dummyOkTcpAddr.IP.String(),
 			Port:    dummyOkTcpAddr.Port,
 			Check: &api.AgentServiceCheck{
-				CheckID:  "success_service_check",
+				CheckID:  "success_service_check_",
 				Name:     "check",
 				HTTP:     dummyOkAddr,
 				Interval: "3s",
@@ -124,6 +126,7 @@ func TestE2EConsul(t *testing.T) {
 		}
 		err = consulClient.Agent().ServiceRegister(successService)
 		require.Nil(err)
+		defer consulClient.Agent().ServiceDeregister("success-service")
 	}
 	{
 		failService := &api.AgentServiceRegistration{
@@ -141,6 +144,7 @@ func TestE2EConsul(t *testing.T) {
 		}
 		err = consulClient.Agent().ServiceRegister(failService)
 		require.Nil(err)
+		defer consulClient.Agent().ServiceDeregister("fail-service")
 	}
 
 	err = waitForUrl(envoyAddr+"/success-service/", 200)
@@ -161,8 +165,6 @@ func TestE2EConsul(t *testing.T) {
 }
 
 func TestE2ENomad(t *testing.T) {
-	e2eTestMutex.Lock()
-	defer e2eTestMutex.Unlock()
 
 	require := require.New(t)
 
@@ -202,9 +204,6 @@ func TestE2ENomad(t *testing.T) {
 	nomadClient, err := nomadapi.NewClient(nomadConf)
 	require.Nil(err)
 
-	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
-	err = cmd.Run()
-	require.Nil(err)
 	defer func() {
 		// Stop Nomad jobs before shutdown
 		_, _, err := nomadClient.Jobs().Deregister("success-service-test", true, nil)
@@ -218,17 +217,6 @@ func TestE2ENomad(t *testing.T) {
 
 		// Wait for jobs to be stopped
 		time.Sleep(2 * time.Second)
-
-		// show logs
-		cmdLogs := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "logs")
-		out, err := cmdLogs.CombinedOutput()
-		require.Nil(err, "docker compose logs failed")
-		t.Logf("docker compose logs:\n%s", out)
-
-		// down
-		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
-		err = cmd.Run()
-		require.Nil(err)
 	}()
 
 	dummyOkListener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -354,8 +342,6 @@ job "fail-service-test" {
 }
 
 func TestE2EBoth(t *testing.T) {
-	e2eTestMutex.Lock()
-	defer e2eTestMutex.Unlock()
 
 	require := require.New(t)
 
@@ -403,9 +389,6 @@ func TestE2EBoth(t *testing.T) {
 	nomadClient, err := nomadapi.NewClient(nomadConf)
 	require.Nil(err)
 
-	cmd := exec.Command("docker", "compose", "--file=./test/docker-compose.yaml", "up", "-d")
-	err = cmd.Run()
-	require.Nil(err)
 	defer func() {
 		// Stop Nomad jobs before shutdown
 		if nomadClient != nil {
@@ -418,16 +401,10 @@ func TestE2EBoth(t *testing.T) {
 			time.Sleep(2 * time.Second)
 		}
 
-		// show logs
-		cmdLogs := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "logs")
-		out, err := cmdLogs.CombinedOutput()
-		require.Nil(err, "docker compose logs failed")
-		t.Logf("docker compose logs:\n%s", out)
-
-		// down
-		cmd := exec.Command("docker", "compose", "--file", "./test/docker-compose.yaml", "down")
-		err = cmd.Run()
-		require.Nil(err)
+		// Deregister Consul service
+		if consulClient != nil {
+			consulClient.Agent().ServiceDeregister("merged-service-consul")
+		}
 	}()
 
 	dummyOkListener, err := net.Listen("tcp", "127.0.0.1:0")
