@@ -22,6 +22,7 @@ var _ cache.NodeHash = &StandardNodeHash{}
 
 var (
 	currentSnapshot cache.Snapshot
+	currentServices []*Service
 	snapshotMutex   sync.RWMutex
 	snapshotReady   bool
 )
@@ -61,6 +62,7 @@ func startXdsServer(ctx context.Context, listener net.Listener, serviceUpdate <-
 
 				snapshotMutex.Lock()
 				currentSnapshot = *snapshot
+				currentServices = upstreams
 				snapshotReady = true
 				snapshotMutex.Unlock()
 
@@ -145,6 +147,15 @@ func GetCurrentSnapshot() cache.Snapshot {
 	return s
 }
 
+func GetCurrentServices() []*Service {
+	snapshotMutex.RLock()
+	defer snapshotMutex.RUnlock()
+	if !snapshotReady {
+		return []*Service{}
+	}
+	return currentServices
+}
+
 func GetServicesFromSnapshot() []*Service {
 	snapshot := GetCurrentSnapshot()
 	if snapshot.GetVersion(resource.EndpointType) == "" {
@@ -167,8 +178,9 @@ func GetServicesFromSnapshot() []*Service {
 						if addr := ep.GetAddress(); addr != nil {
 							if sockAddr := addr.GetSocketAddress(); sockAddr != nil {
 								service.Endpoints = append(service.Endpoints, &ServiceEndpoint{
-									Host: sockAddr.Address,
-									Port: sockAddr.GetPortValue(),
+									Host:   sockAddr.Address,
+									Port:   sockAddr.GetPortValue(),
+									Source: "xds",
 								})
 							}
 						}
