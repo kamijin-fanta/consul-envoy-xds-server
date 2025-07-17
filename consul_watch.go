@@ -68,8 +68,9 @@ func (r *ConsulServiceWatcher) Emit() {
 					Debug("refresh entry")
 
 				endpoints = append(endpoints, &ServiceEndpoint{
-					Host: addr,
-					Port: uint32(se.Service.Port),
+					Host:   addr,
+					Port:   uint32(se.Service.Port),
+					Source: "consul",
 				})
 			}
 			service.Endpoints = endpoints

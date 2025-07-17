@@ -162,8 +162,9 @@ func (n *NomadServiceWatcher) updateServiceEndpoints(serviceName string, registr
 	
 	for _, reg := range registrations {
 		endpoints = append(endpoints, &ServiceEndpoint{
-			Host: reg.Address,
-			Port: uint32(reg.Port),
+			Host:   reg.Address,
+			Port:   uint32(reg.Port),
+			Source: "nomad",
 		})
 		
 		n.logger.

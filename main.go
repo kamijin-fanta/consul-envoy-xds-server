@@ -233,8 +233,9 @@ type Service struct {
 }
 
 type ServiceEndpoint struct {
-	Host string
-	Port uint32
+	Host   string
+	Port   uint32
+	Source string // "consul" or "nomad"
 }
 
 type DebugData struct {
@@ -251,8 +252,8 @@ func debugHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get services from current snapshot
-	services := GetServicesFromSnapshot()
+	// Get services with original source information
+	services := GetCurrentServices()
 
 	totalEndpoints := 0
 	for _, service := range services {

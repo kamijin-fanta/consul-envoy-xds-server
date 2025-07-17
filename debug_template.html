@@ -7,7 +7,19 @@
         .service { margin: 20px 0; padding: 15px; border: 1px solid #ccc; border-radius: 5px; }
         .service-name { font-size: 18px; font-weight: bold; color: #333; }
         .endpoints { margin-top: 10px; }
-        .endpoint { margin: 5px 0; padding: 5px; background-color: #f9f9f9; border-left: 3px solid #4CAF50; }
+        .endpoint { margin: 5px 0; padding: 5px; background-color: #f9f9f9; border-left: 3px solid #4CAF50; position: relative; }
+        .source-tag { 
+            display: inline-block; 
+            background-color: #007cba; 
+            color: white; 
+            padding: 2px 6px; 
+            border-radius: 3px; 
+            font-size: 10px; 
+            margin-left: 10px; 
+            text-transform: uppercase; 
+        }
+        .source-consul { background-color: #dc477d; }
+        .source-nomad { background-color: #00ca8e; }
         .no-services { color: #666; font-style: italic; }
         .timestamp { color: #666; font-size: 12px; }
         .stats { background-color: #f0f0f0; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
@@ -46,6 +58,7 @@
                     {{range .Endpoints}}
                     <div class="endpoint">
                         <strong>{{.Host}}:{{.Port}}</strong>
+                        <span class="source-tag source-{{.Source}}">{{.Source}}</span>
                     </div>
                     {{end}}
                 {{else}}

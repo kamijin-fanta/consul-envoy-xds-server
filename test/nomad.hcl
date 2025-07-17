@@ -12,12 +12,6 @@ client {
   enabled = true
 }
 
-plugin "raw_exec" {
-  config {
-    enabled = true
-  }
-}
-
 ports {
   http = 4646
   rpc  = 4647
@@ -25,8 +19,8 @@ ports {
 }
 
 consul {
-  # Disable consul integration to avoid conflicts
-  auto_advertise = false
+  address = "127.0.0.1:16201"
+  auto_advertise = true
 }
 
 log_level = "INFO"
