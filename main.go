@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"flag"
 	"html/template"
@@ -22,6 +23,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 )
+
+//go:embed debug_template.html
+var templateFS embed.FS
 
 var (
 	namespace                = "consul_envoy_xds_server"
@@ -246,7 +250,7 @@ type DebugData struct {
 }
 
 func debugHandler(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := template.ParseFiles("debug_template.html")
+	tmpl, err := template.ParseFS(templateFS, "debug_template.html")
 	if err != nil {
 		http.Error(w, "Template parsing error: "+err.Error(), http.StatusInternalServerError)
 		return
